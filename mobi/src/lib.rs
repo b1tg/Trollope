@@ -1,3 +1,4 @@
+use html2text::from_read;
 use nom::error::ErrorKind;
 use nom::error::ParseError;
 use nom::number::complete::*;
@@ -154,7 +155,7 @@ mod tests {
                 println!("{}, {}, {}", &offset, &attr, &uid);
                 //break;
             }
-            if i < 5 {
+            if i > 0 && i < 10 {
                 // otherwise there would be code issue
                 contents.extend_from_slice(&buf[offset as usize..offset as usize + 4096]);
                 // let content = String::from_utf8_lossy(&buf[offset as usize..offset as usize+4096+2]);
@@ -162,7 +163,22 @@ mod tests {
             off += 8;
         }
         let contents_str = String::from_utf8_lossy(&contents);
-        println!("contents: {}", &contents_str);
+        let pages = contents_str.split("<mbp:pagebreak/>");
+        // println!("contents: {}", &contents_str);
+        // let mut display_pages = vec![];
+        for page in pages {
+            let big_page = html2text::from_read(&*(page.to_owned().into_bytes()), 80);
+            //println!("{}", &big_page);
+            let l_pages: Vec<&str> = big_page.lines().collect();
+            let cks = l_pages.chunks(30);
+            for lp in cks {
+                println!("-----PAGE------");
+                let dis = lp.join("\n");
+                println!("{}", &dis);
+                println!("-----------");
+            }
+            println!("============\n");
+        }
         let (offset, attr, uid) = tuple::<_, _, (), _>((be_u32, be_u8, eat_3))(&buf[76 + 2..])
             .unwrap()
             .1;
