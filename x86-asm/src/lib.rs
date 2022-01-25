@@ -118,6 +118,9 @@ mod tests {
 
 // 0:  b8 01 00 00 00          mov    eax,0x1
 // 5:  89 c3                   mov    ebx,eax
+
+// 0:  89 c3                   mov    ebx,eax
+// 2:  66 89 c3                mov    bx,ax 
 }
 
 
@@ -126,3 +129,6 @@ mod tests {
 // https://en.wikibooks.org/wiki/X86_Assembly/Machine_Language_Conversion
 // https://defuse.ca/online-x86-assembler.htm#disassembly
 // https://faydoc.tripod.com/cpu/mov.htm
+// https://nju-projectn.github.io/ics-pa-gitbook/ics2017/i386-intro.html
+// https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-instruction-set-reference-manual-325383.pdf
+// https://web.archive.org/web/20150212055048/http://x86.renejeschke.de/html/file_module_x86_id_176.html
