@@ -19,20 +19,48 @@ enum Register {
     Unknow,
 }
 
-impl fmt::Display for Register {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let rstr = match self {
-            Register::Eax => "eax",
-            Register::Ebx => "ebx",
-            Register::Ecx => "ecx",
-            Register::Edx => "edx",
-            Register::IP => "eip",
-            Register::Eflags => "eflags",
-            _ => "unknow",
-        };
-        write!(f, "{}", rstr)
+impl Register {
+    fn to_str(self, width: u8) -> &'static str {
+        match width {
+            16 => {
+                match self {
+                    Register::Eax => "ax",
+                    Register::Ebx => "bx",
+                    Register::Ecx => "cx",
+                    Register::Edx => "dx",
+                    Register::IP => "ip",
+                    Register::Eflags => "eflags",
+                    _ => "unknow",            
+                }
+            }
+            _ => {
+                match self {
+                    Register::Eax => "eax",
+                    Register::Ebx => "ebx",
+                    Register::Ecx => "ecx",
+                    Register::Edx => "edx",
+                    Register::IP => "eip",
+                    Register::Eflags => "eflags",
+                    _ => "unknow",            
+                }                
+            }
+        }
     }
 }
+// impl fmt::Display for Register {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         let rstr = match self {
+//             Register::Eax => "eax",
+//             Register::Ebx => "ebx",
+//             Register::Ecx => "ecx",
+//             Register::Edx => "edx",
+//             Register::IP => "eip",
+//             Register::Eflags => "eflags",
+//             _ => "unknow",
+//         };
+//         write!(f, "{}", rstr)
+//     }
+// }
 
 impl TryFrom<u8> for Register {
     type Error = ();
@@ -56,50 +84,51 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse(&self) -> Result<(),()>{
+    fn parse(&self) -> Result<Vec<String>,()>{
         let mut idx = 0;
+        let mut result: Vec<String> = vec![];
+        let mut width = 32;
         loop {
             if idx >= self.input.len() {
                 break;
             }
             let op0 = self.input[idx];
-            dbg!(op0);
+            println!("0x{:x}", op0);
+            idx += 1;
+
             match op0 {
-            0x90 => println!("nop"),
+            0x66 => {
+                width = 16;
+                continue;
+            },
+            0x90 => {
+                result.push("nop".to_string());
+            },
             0xb8..0xc0 => {
                 let reg_num = op0 - 0xb8;
                 let reg:Register = reg_num.try_into().unwrap();
-                let imm = u32::from_le_bytes(self.input[idx+1..idx+5].try_into().unwrap());
-                println!("mov {}, {}", reg, imm);
+                let imm = u32::from_le_bytes(self.input[idx..idx+4].try_into().unwrap());
+                let tmp = format!("mov {}, 0x{:x}", reg.to_str(width), imm);
+                result.push(tmp.to_string());
                 idx += 4;
             },
             0x89 => {
-                let reg_n = self.input[idx+1];
-                // >>> "{0:b}".format(195)
+                let reg_n = self.input[idx];
+                idx += 1;
+                // >>> "{0:b}".format(195) # 0xc3 == 195
                 // '11000011'
                 let reg_l:Register = (reg_n & 0b11).try_into().unwrap();
                 let reg_r:Register = (reg_n & 0b1100).try_into().unwrap();
-                println!("mov {}, {}", reg_l, reg_r);
-                idx += 6;
+                let tmp = format!("mov {}, {}", reg_l.to_str(width), reg_r.to_str(width));
+                result.push(tmp.to_string());
+                
             },
             _ => println!("Unknow Op"),
             };
-            idx +=1;
         }
-
-        Ok(())
+        Ok(result)
     }
 }
-
-
-
-
-
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -110,7 +139,15 @@ mod tests {
 
         let input = [0x90u8, 0xb8, 0x01, 0x00, 0x00, 0x00, 0x89, 0xc3];
         let parser = Parser::new(&input);
-        parser.parse();
+        let output = parser.parse();
+        assert_eq!(output.unwrap(), vec!["nop".to_string(), "mov eax, 0x1".to_string(), "mov ebx, eax".to_string()]);
+
+        let input = [0x89u8, 0xc3, 0x66, 0x89, 0xc3];
+        let parser = Parser::new(&input);
+        let output = parser.parse();
+        assert_eq!(output.unwrap(), vec!["mov ebx, eax".to_string(), "mov bx, ax".to_string()])
+
+
     }
 // { 0x90, 0xB8, 0x01, 0x00, 0x00, 0x00 }
 // 0:  90                      nop
