@@ -224,6 +224,13 @@ mod tests {
     fn it_works() {
         assert_eq!(2 + 2, 4);
 
+        // { 0x90, 0xB8, 0x01, 0x00, 0x00, 0x00 }
+        // 0:  90                      nop
+        // 1:  b8 01 00 00 00          mov    eax,0x1
+
+        // 0:  b8 01 00 00 00          mov    eax,0x1
+        // 5:  89 c3                   mov    ebx,eax
+
         let input = [0x90u8, 0xb8, 0x01, 0x00, 0x00, 0x00, 0x89, 0xc3];
         let parser = Parser::new(&input);
         let output = parser.parse();
@@ -235,6 +242,9 @@ mod tests {
                 "mov ebx, eax".to_string()
             ]
         );
+
+        // 0:  89 c3                   mov    ebx,eax
+        // 2:  66 89 c3                mov    bx,ax
 
         let input = [0x89u8, 0xc3, 0x66, 0x89, 0xc3];
         let parser = Parser::new(&input);
@@ -248,6 +258,7 @@ mod tests {
         // 0:  8b 75 08                mov    esi,DWORD PTR [ebp+0x8]
         // 3:  31 c9                   xor    ecx,ecx
         // 5:  8b 06                   mov    eax,DWORD PTR [esi]
+        
         let input = [0x8B, 0x75, 0x08, 0x31, 0xC9, 0x8B, 0x06];
         let parser = Parser::new(&input);
         let output = parser.parse();
@@ -260,15 +271,8 @@ mod tests {
             ]
         );
     }
-    // { 0x90, 0xB8, 0x01, 0x00, 0x00, 0x00 }
-    // 0:  90                      nop
-    // 1:  b8 01 00 00 00          mov    eax,0x1
 
-    // 0:  b8 01 00 00 00          mov    eax,0x1
-    // 5:  89 c3                   mov    ebx,eax
 
-    // 0:  89 c3                   mov    ebx,eax
-    // 2:  66 89 c3                mov    bx,ax
 }
 
 // useful links:
