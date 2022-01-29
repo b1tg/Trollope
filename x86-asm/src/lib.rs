@@ -20,7 +20,7 @@ enum Register {
     Edi,
     IP,
     Eflags,
-    Unknow,
+    Undefined,
 }
 
 impl Register {
@@ -82,9 +82,83 @@ impl TryFrom<u8> for Register {
             0b101 => Register::Ebp,
             0b110 => Register::Esi,
             0b111 => Register::Edi,
-            _ => Register::Unknow,
+            _ => Register::Undefined,
         };
         return Ok(res);
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct ModRM {
+    has_ptr: bool,
+    // mode: u8,
+    reg: Register,
+    base_reg: Register,
+    // SIB
+    scale_factor: u8,
+    index_reg: Register,
+    offset: u32,
+}
+
+impl ModRM {
+    fn from_u8(src: &[u8], idx_ptr: &mut usize) -> Self {
+        // let mut idx = 0;
+        let mut idx = *idx_ptr;
+        let mod_rm = src[idx];
+        idx += 1;
+        let mod1: u8 = ((mod_rm & 0b11000000) >> 6).try_into().unwrap();
+        let reg: Register = ((mod_rm & 0b00111000) >> 3).try_into().unwrap();
+        let mut rm: Register = (mod_rm & 0b00000111).try_into().unwrap();
+        // If rm == 0x100, means a SIB follows the ModR/M byte
+        // P40 Table 2-2. 32-Bit Addressing Forms with the ModR/M Byte (NOTES 1)
+
+        // register [0..3]
+        // Indicate the register used as the index (SIB byte bits 3, 4 and 5)
+        // and the scaling factor (determined by SIB byte bits 6 and 7)
+        let mut scale_factor: u8 = 0;
+        let mut index_reg: Register = Register::Undefined;
+        let mut base_reg: Register = Register::Undefined;
+        if mod1 != 0b11 && rm == Register::Esp {
+            // SIB
+            // [
+            //     scale: scale factor
+            //     index: index register
+            //     base: base register
+            // ]
+            // 0x100
+            let sib = src[idx];
+            idx += 1;
+            // 00100100
+            scale_factor = (sib & 0b11000000) >> 6;
+            index_reg = ((sib & 0b00111000) >> 3).try_into().unwrap();
+            base_reg = (sib & 0b00000111).try_into().unwrap();
+            rm = base_reg
+            // has_sib = true;
+        }
+        let mut offset = 0u32;
+        if mod1 == 0b00 {
+            offset = 0;
+        } else if mod1 == 0b01 {
+            offset = src[idx].into();
+            idx += 1;
+            // mov    esi,DWORD PTR [ebp+0x8]
+        } else if mod1 == 0b10 {
+            offset = u32::from_le_bytes(src[idx..idx + 4].try_into().unwrap());
+            idx += 4;
+        } else if mod1 == 0b11 {
+        }
+        *idx_ptr = idx;
+        ModRM {
+            // mode: mod1,
+            has_ptr: mod1 != 0b11,
+            reg: reg,
+            base_reg: rm,
+            // SIB
+            scale_factor: scale_factor,
+            index_reg: index_reg,
+            // offset
+            offset: offset,
+        }
     }
 }
 
@@ -185,149 +259,44 @@ impl<'a> Parser<'a> {
                 0x89 => {
                     // 89 /r
                     // MOV r/m32,r32
-
-                    let mod_rm = self.input[idx];
-                    idx += 1;
-                    let mod1: u8 = ((mod_rm & 0b11000000) >> 6).try_into().unwrap();
-                    let reg: Register = ((mod_rm & 0b00111000) >> 3).try_into().unwrap();
-                    let rm: Register = (mod_rm & 0b00000111).try_into().unwrap();
-
-                    let mut offset = 0u32;
-                    if mod1 == 0 {
-                        offset = 0;
-                    } else if mod1 == 0b01 {
-                        offset = self.input[idx].into();
-                        idx += 1;
-                        // mov    esi,DWORD PTR [ebp+0x8]
-                    } else if mod1 == 0b10 {
-                        offset = u32::from_le_bytes(self.input[idx..idx + 4].try_into().unwrap());
-                        idx += 4;
-                    } else if mod1 == 0b11 {
-                        // unimplemented!();
+                    let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    let factor = 2u32.pow(mode_rm.scale_factor.into());
+                    let mut left = format!("{}", mode_rm.base_reg.to_str(width));
+                    if factor > 1 {
+                        left.push_str(&format!("*0x{:x}", factor))
                     }
-
-                    let tmp = {
-                        if offset == 0 {
-                            if mod1 == 0b11 {
-                                format!("mov {}, {}", rm.to_str(width), reg.to_str(width))
-                            } else {
-                                format!(
-                                    "mov DWORD PTR [{}], {}",
-                                    rm.to_str(width),
-                                    reg.to_str(width)
-                                )
-                            }
-                        } else {
-                            format!(
-                                "mov DWORD PTR [{}+0x{:x}], {}",
-                                rm.to_str(width),
-                                offset,
-                                reg.to_str(width)
-                            )
-                        }
+                    if mode_rm.offset > 0 {
+                        left.push_str(&format!("+0x{:x}", mode_rm.offset));
+                    }
+                    let tmp = if mode_rm.has_ptr {
+                        format!("mov DWORD PTR [{}], {}", left, mode_rm.reg.to_str(width))
+                    } else {
+                        format!("mov {}, {}", left, mode_rm.reg.to_str(width))
                     };
                     result.push(tmp.to_string());
                 }
-                0x8B => {
+                0x8b => {
                     // 8B /r
                     // MOV r32,r/m32
-                    // 0x75 01110101 7 5
-                    // mod = 01
-                    // reg = 110 esi
-                    // rm = 101 [EBP]+disp8
-
-                    // 0x44 1000100
-                    // mod = 01
-                    // reg = 000
-                    // rm = 100
-                    let mod_rm = self.input[idx];
-                    idx += 1;
-                    let mod1: u8 = ((mod_rm & 0b11000000) >> 6).try_into().unwrap();
-                    let reg: Register = ((mod_rm & 0b00111000) >> 3).try_into().unwrap();
-                    let mut rm: Register = (mod_rm & 0b00000111).try_into().unwrap();
-                    // let mut rm: Register = rm1;
-                    let mut scale_factor: u8 = 0;
-                    let mut index: u8 = 0;
-                    // If rm == 0x100, means a SIB follows the ModR/M byte
-                    // P40 Table 2-2. 32-Bit Addressing Forms with the ModR/M Byte (NOTES 1)
-
-                    // register [0..3]
-                    // Indicate the register used as the index (SIB byte bits 3, 4 and 5)
-                    // and the scaling factor (determined by SIB byte bits 6 and 7)
-                    let mut has_sib = false;
-                    if rm == Register::Esp {
-                        // 0x100
-                        let sib = self.input[idx];
-                        idx += 1;
-                        // 00100100
-                        scale_factor = (sib & 0b11000000) >> 6;
-                        index = (sib & 0b00111000) >> 3;
-                        rm = (sib & 0b00000111).try_into().unwrap();
-                        has_sib = true;
+                    let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    let factor = 2u32.pow(mode_rm.scale_factor.into());
+                    let mut right = format!("{}", mode_rm.base_reg.to_str(width));
+                    if factor > 1 {
+                        right.push_str(&format!("*0x{:x}", factor))
                     }
-                    // let mut right = "".to_string();
-                    // if scale_factor == 0b00 {
-                    //     right = format!("[{}]", rm.to_str(width));
-                    // } else {
-                    //     let scale = 2u8.pow(scale_factor.into());
-                    //     right = format!("[{}*{}]", rm.to_str(width), scale);
-                    // }
-                    // let tmp = format!("mov {}, {}", reg.to_str(width), right);
-                    // result.push(tmp.to_string());
-                    // } else {
-                    let mut offset = 0u32;
-                    if mod1 == 0b00 {
-                        offset = 0;
-                    } else if mod1 == 0b01 {
-                        offset = self.input[idx].into();
-                        idx += 1;
-                        // mov    esi,DWORD PTR [ebp+0x8]
-                    } else if mod1 == 0b10 {
-                        offset = u32::from_le_bytes(self.input[idx..idx + 4].try_into().unwrap());
-                        idx += 4;
-                    } else if mod1 == 0b11 {
-                        unimplemented!();
+                    if mode_rm.offset > 0 {
+                        right.push_str(&format!("+0x{:x}", mode_rm.offset));
                     }
-                    let mut right = "".to_string();
 
-                    if has_sib {
-                        if scale_factor == 0b00 {
-                            right = format!("{}", rm.to_str(width));
-                        } else {
-                            let scale = 2u8.pow(scale_factor.into());
-                            right = format!("{}*{}", rm.to_str(width), scale);
-                        }
+                    let tmp = if mode_rm.has_ptr {
+                        format!("mov {}, DWORD PTR [{}]", mode_rm.reg.to_str(width), right)
                     } else {
-                        right = format!("{}", rm.to_str(width));
-                    }
-                    if offset > 0 {
-                        right = format!("{}+0x{:x}", right, offset);
-                    } else if offset < 0 {
-                        unimplemented!()
-                    } else {
-                        right = format!("{}", right);
-                    }
-                    let tmp = format!("mov {}, DWORD PTR [{}]", reg.to_str(width), right);
-                    // let tmp = {
-                    //     if offset == 0 {
-                    //         format!(
-                    //             "mov {}, DWORD PTR [{}]",
-                    //             reg.to_str(width),
-                    //             rm.to_str(width)
-                    //         )
-                    //     } else {
-                    //         format!(
-                    //             "mov {}, DWORD PTR [{}+0x{:x}]",
-                    //             reg.to_str(width),
-                    //             rm.to_str(width),
-                    //             offset
-                    //         )
-                    //     }
-                    // };
+                        format!("mov {}, {}", mode_rm.reg.to_str(width), right)
+                    };
+
                     result.push(tmp.to_string());
-                    // }
                 }
-                _ => println!("Unknow Op"),
+                _ => println!("Undefined Op"),
             };
         }
         Ok(result)
@@ -337,6 +306,95 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use crate::*;
+
+    #[test]
+    fn test_modrm() {
+        // mov    eax,DWORD PTR [esp+0x8]
+        let src = [0x8B, 0x44, 0x24, 0x08];
+        let mut idx = 1;
+        let mod_rm = ModRM::from_u8(&src, &mut idx);
+        // println!("mode_rm: {:?}", mod_rm);
+        // println!("idx: {:?}", idx);
+        assert_eq!(
+            mod_rm,
+            ModRM {
+                has_ptr: true,
+                reg: Register::Eax,
+                base_reg: Register::Esp,
+                scale_factor: 0,
+                index_reg: Register::Esp,
+                offset: 8,
+            }
+        );
+
+        // mov    DWORD PTR [esp],eax
+        let src = [0x89, 0x04, 0x24];
+        let mut idx = 1;
+        let mod_rm = ModRM::from_u8(&src, &mut idx);
+        assert_eq!(
+            mod_rm,
+            ModRM {
+                has_ptr: true,
+                reg: Register::Eax,
+                base_reg: Register::Esp,
+                scale_factor: 0,
+                index_reg: Register::Esp,
+                offset: 0,
+            }
+        );
+
+        // mov    eax,DWORD PTR [edx+eax*4]
+        let src = [0x8B, 0x04, 0x82];
+        let mut idx = 1;
+        let mod_rm = ModRM::from_u8(&src, &mut idx);
+        assert_eq!(
+            mod_rm,
+            ModRM {
+                has_ptr: true,
+                reg: Register::Eax,
+                base_reg: Register::Edx,
+                scale_factor: 2,
+                index_reg: Register::Eax,
+                offset: 0,
+            }
+        );
+
+        // 8b 06
+        // mov    eax,DWORD PTR [esi]
+        let src = [0x8B, 0x06];
+        let mut idx = 1;
+        let mod_rm = ModRM::from_u8(&src, &mut idx);
+        assert_eq!(
+            mod_rm,
+            ModRM {
+                has_ptr: true,
+                reg: Register::Eax,
+                base_reg: Register::Esi,
+                scale_factor: 0,
+                index_reg: Register::Undefined,
+                offset: 0,
+            }
+        );
+
+        // 89 c3
+        // mov    ebx,eax
+        let src = [0x89, 0xc3];
+        let mut idx = 1;
+        let mod_rm = ModRM::from_u8(&src, &mut idx);
+        assert_eq!(
+            mod_rm,
+            ModRM {
+                has_ptr: false,
+                reg: Register::Eax,
+                base_reg: Register::Ebx,
+                scale_factor: 0,
+                index_reg: Register::Undefined,
+                offset: 0,
+            }
+        );
+    }
+
+    // #[ignore]
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);
