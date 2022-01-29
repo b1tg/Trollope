@@ -97,7 +97,7 @@ struct ModRM {
     // SIB
     scale_factor: u8,
     index_reg: Register,
-    offset: u32,
+    offset: i32,
 }
 
 impl ModRM {
@@ -135,15 +135,15 @@ impl ModRM {
             rm = base_reg
             // has_sib = true;
         }
-        let mut offset = 0u32;
+        let mut offset = 0i32;
         if mod1 == 0b00 {
             offset = 0;
         } else if mod1 == 0b01 {
-            offset = src[idx].into();
+            offset = i8::from_le_bytes([src[idx].try_into().unwrap()]).into();
             idx += 1;
             // mov    esi,DWORD PTR [ebp+0x8]
         } else if mod1 == 0b10 {
-            offset = u32::from_le_bytes(src[idx..idx + 4].try_into().unwrap());
+            offset = i32::from_le_bytes(src[idx..idx + 4].try_into().unwrap());
             idx += 4;
         } else if mod1 == 0b11 {
         }
@@ -180,14 +180,43 @@ impl<'a> Parser<'a> {
             idx += 1;
 
             match op0 {
-                0xC0..=0xCF => match op0 {
-                    0xC3 => {
-                        result.push("ret".to_string());
+                0xE8 => {
+                    // E8 cd
+                    // CALL rel32
+                    // let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    // dbg!(&mode_rm);
+                    // dbg!(&self.input[idx..idx + 4]);
+                    let rel32 = i32::from_le_bytes(self.input[idx..idx + 4].try_into().unwrap());
+                    idx += 4;
+                    // dbg!(&rel32);
+                    let off = idx as i32 + rel32;
+                    let tmp = format!("call {:x}", off);
+                    result.push(tmp.to_string());
+                }
+                0xC3 => {
+                    result.push("ret".to_string());
+                }
+                0xC7 => {
+                    //  C7 / 0
+                    //  MOV r/m32, imm32
+                    let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    let factor = 2u32.pow(mode_rm.scale_factor.into());
+                    let mut left = format!("{}", mode_rm.base_reg.to_str(width));
+                    if factor > 1 {
+                        left.push_str(&format!("*0x{:x}", factor))
                     }
-                    _ => {
-                        unimplemented!()
+                    if mode_rm.offset > 0 {
+                        left.push_str(&format!("+0x{:x}", mode_rm.offset));
                     }
-                },
+                    let imm32 = u32::from_le_bytes(self.input[idx..idx + 4].try_into().unwrap());
+                    idx += 4;
+                    let tmp = if mode_rm.has_ptr {
+                        format!("mov DWORD PTR [{}], 0x{:x}", left, imm32)
+                    } else {
+                        format!("mov {}, 0x{:x}", left, imm32)
+                    };
+                    result.push(tmp.to_string());
+                }
                 0x50..=0x5F => {
                     // PUSH/POP
                     let action = if op0 < 0x58 { "push" } else { "pop" };
@@ -256,10 +285,51 @@ impl<'a> Parser<'a> {
                     result.push(tmp.to_string());
                     idx += 4;
                 }
+                0x83 => {
+                    // 83 /5 ib
+                    // SUB r/m32, imm8
+                    // P1306
+
+                    // 83 /0 ib
+                    // ADD r/m32, imm8
+                    let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    // dbg!(&mode_rm, &mode_rm.reg);
+
+                    let op = {
+                        match mode_rm.reg {
+                            Register::Eax => {
+                                // 83 /0 ib
+                                "add"
+                            }
+                            Register::Ebp => {
+                                // 83 /5 ib
+                                "sub"
+                            }
+                            _ => {
+                                unreachable!();
+                            }
+                        }
+                    };
+
+                    let imm8 = self.input[idx];
+                    idx += 1;
+                    let tmp = if mode_rm.has_ptr {
+                        format!(
+                            "{} DWORD PTR [{}], 0x{:x}",
+                            op,
+                            mode_rm.base_reg.to_str(width),
+                            imm8
+                        )
+                    } else {
+                        format!("{} {}, 0x{:x}", op, mode_rm.base_reg.to_str(width), imm8)
+                    };
+                    result.push(tmp.to_string());
+                }
                 0x89 => {
                     // 89 /r
                     // MOV r/m32,r32
                     let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    // dbg!(&mode_rm, mode_rm.offset > 0);
                     let factor = 2u32.pow(mode_rm.scale_factor.into());
                     let mut left = format!("{}", mode_rm.base_reg.to_str(width));
                     if factor > 1 {
@@ -267,6 +337,8 @@ impl<'a> Parser<'a> {
                     }
                     if mode_rm.offset > 0 {
                         left.push_str(&format!("+0x{:x}", mode_rm.offset));
+                    } else if mode_rm.offset < 0 {
+                        left.push_str(&format!("-0x{:x}", mode_rm.offset.abs()));
                     }
                     let tmp = if mode_rm.has_ptr {
                         format!("mov DWORD PTR [{}], {}", left, mode_rm.reg.to_str(width))
@@ -296,6 +368,30 @@ impl<'a> Parser<'a> {
 
                     result.push(tmp.to_string());
                 }
+                0x8d => {
+                    // 8D /r
+                    // LEA r32, m
+                    let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    let factor = 2u32.pow(mode_rm.scale_factor.into());
+                    let mut right = format!("{}", mode_rm.base_reg.to_str(width));
+                    if factor > 1 {
+                        right.push_str(&format!(
+                            "+{}*0x{:x}",
+                            mode_rm.index_reg.to_str(width),
+                            factor
+                        ))
+                    }
+                    if mode_rm.offset > 0 {
+                        right.push_str(&format!("+0x{:x}", mode_rm.offset));
+                    }
+                    let tmp = if mode_rm.has_ptr {
+                        format!("lea {}, [{}]", mode_rm.reg.to_str(width), right)
+                    } else {
+                        format!("lea {}, {}", mode_rm.reg.to_str(width), right)
+                    };
+
+                    result.push(tmp.to_string());
+                }
                 0x0F => {
                     // 0F AF / r
                     // IMUL r32, r/m32
@@ -320,7 +416,10 @@ impl<'a> Parser<'a> {
 
                     result.push(tmp.to_string());
                 }
-                _ => println!("Undefined Op"),
+                _ => {
+                    println!("Undefined Op 0x{:x}", op0);
+                    unimplemented!();
+                }
             };
         }
         Ok(result)
@@ -331,8 +430,28 @@ impl<'a> Parser<'a> {
 mod tests {
     use crate::*;
 
+    #[ignore]
     #[test]
     fn test_modrm() {
+        // 0x8D, 0x74, 0xC3, 0x04
+        // lea esi, [ebx+8*eax+4]
+        let src = [0x8D, 0x74, 0xC3, 0x04];
+        let mut idx = 1;
+        let mod_rm = ModRM::from_u8(&src, &mut idx);
+        println!("mode_rm: {:?}", mod_rm);
+        println!("idx: {:?}", idx);
+        assert_eq!(
+            mod_rm,
+            ModRM {
+                has_ptr: true,
+                reg: Register::Esi,
+                base_reg: Register::Ebx,
+                scale_factor: 3,
+                index_reg: Register::Eax,
+                offset: 4,
+            }
+        );
+
         // mov    eax,DWORD PTR [esp+0x8]
         let src = [0x8B, 0x44, 0x24, 0x08];
         let mut idx = 1;
@@ -418,7 +537,54 @@ mod tests {
         );
     }
 
-    // #[ignore]
+    #[test]
+    fn test_mov() {
+        // 0:  55                      push   ebp
+        // 1:  89 e5                   mov    ebp,esp
+        // 3:  83 ec 18                sub    esp,0x18
+        // 6:  b8 01 00 00 00          mov    eax,0x1
+        // b:  c7 04 24 01 00 00 00    mov    DWORD PTR [esp],0x1
+        // 12: 89 45 fc                mov    DWORD PTR [ebp-0x4],eax
+        // 15: e8 fc ff ff ff          call   16 <_main+0x16>
+        // 1a: b9 00 00 00 00          mov    ecx,0x0
+        // 1f: 89 45 f8                mov    DWORD PTR [ebp-0x8],eax
+        // 22: 89 c8                   mov    eax,ecx
+        // 24: 83 c4 18                add    esp,0x18
+        // 27: 5d                      pop    ebp
+        // 28: c3                      ret
+
+        let input = [
+            0x55, 0x89, 0xE5, 0x83, 0xEC, 0x18, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xC7, 0x04, 0x24,
+            0x01, 0x00, 0x00, 0x00, 0x89, 0x45, 0xFC, 0xE8, 0xFC, 0xFF, 0xFF, 0xFF, 0xB9, 0x00,
+            0x00, 0x00, 0x00, 0x89, 0x45, 0xF8, 0x89, 0xC8, 0x83, 0xC4, 0x18, 0x5D, 0xC3,
+        ];
+        // let input = [
+        //     0xB8, 0x01, 0x00, 0x00, 0x00
+        // ];
+        let parser = Parser::new(&input);
+        let output = parser.parse();
+
+        assert_eq!(
+            output.unwrap(),
+            vec![
+                "push ebp",
+                "mov ebp, esp",
+                "sub esp, 0x18",
+                "mov eax, 0x1",
+                "mov DWORD PTR [esp], 0x1",
+                "mov DWORD PTR [ebp-0x4], eax",
+                "call 16",
+                "mov ecx, 0x0",
+                "mov DWORD PTR [ebp-0x8], eax",
+                "mov eax, ecx",
+                "add esp, 0x18",
+                "pop ebp",
+                "ret",
+            ]
+        );
+    }
+
+    #[ignore]
     #[test]
     fn it_works() {
         assert_eq!(2 + 2, 4);
@@ -500,6 +666,13 @@ mod tests {
                 // "mov eax, DWORD PTR [esi]".to_string(),
             ]
         );
+
+        // 0x8D, 0x74, 0xC3, 0x04
+        // lea esi, [ebx+8*eax+4]
+        let input = [0x8D, 0x74, 0xC3, 0x04];
+        let parser = Parser::new(&input);
+        let output = parser.parse();
+        assert_eq!(output.unwrap(), vec!["lea esi, [ebx+eax*0x8+0x4]",]);
     }
 }
 
