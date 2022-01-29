@@ -296,6 +296,30 @@ impl<'a> Parser<'a> {
 
                     result.push(tmp.to_string());
                 }
+                0x0F => {
+                    // 0F AF / r
+                    // IMUL r32, r/m32
+                    if self.input[idx] != 0xAF {
+                        unimplemented!();
+                    }
+                    idx += 1;
+                    let mode_rm = ModRM::from_u8(&self.input, &mut idx);
+                    let factor = 2u32.pow(mode_rm.scale_factor.into());
+                    let mut right = format!("{}", mode_rm.base_reg.to_str(width));
+                    if factor > 1 {
+                        right.push_str(&format!("*0x{:x}", factor))
+                    }
+                    if mode_rm.offset > 0 {
+                        right.push_str(&format!("+0x{:x}", mode_rm.offset));
+                    }
+                    let tmp = if mode_rm.has_ptr {
+                        format!("imul {}, DWORD PTR [{}]", mode_rm.reg.to_str(width), right)
+                    } else {
+                        format!("imul {}, {}", mode_rm.reg.to_str(width), right)
+                    };
+
+                    result.push(tmp.to_string());
+                }
                 _ => println!("Undefined Op"),
             };
         }
@@ -467,7 +491,7 @@ mod tests {
                 "mov eax, DWORD PTR [esp+0x8]",
                 "mov DWORD PTR [esp], eax",
                 "mov eax, DWORD PTR [esp]",
-                // "imul eax,DWORD PTR [esp]", // TODO
+                "imul eax, DWORD PTR [esp]",
                 "pop edx",
                 "ret"
 
